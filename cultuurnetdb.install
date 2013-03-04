@@ -1,0 +1,40 @@
+<?php
+
+/**
+ * Implements hook_schema().
+ */
+function cultuurnetdb_schema()
+{
+  $schema = array();
+
+  $schema['cultuurnetdb_id'] = array(
+    'description' => 'Long description',
+    'fields' => array(
+      'id' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'description' => 'Primary Key: Unique Cultuurnetdb ID.',
+      ),
+      'cdbid' => array(
+        'type' => 'varchar',
+        'size' => 'normal',
+        'length' => 255,
+        'default' => '',
+        'description' => '',
+      ),
+      'entity_type' => array(
+        'type' => 'varchar',
+        'size' => 'normal',
+        'length' => 255,
+        'default' => '',
+        'description' => 'Long description',
+      ),
+    ),
+    'primary key' => array('id'),
+    'unique keys' => array(
+      'cultuurnetdb_entity' => array('cdbid', 'entity_type'),
+    ),
+  );
+
+  return $schema;
+}

@@ -1,0 +1,6 @@
+name=CultuurNet Cdb
+description=Integration of CultuurNet's core database entities: events, actors, productions
+core=7.x
+
+dependencies[]=entity
+dependencies[]=xautoload

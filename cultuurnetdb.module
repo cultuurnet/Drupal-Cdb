@@ -1,0 +1,219 @@
+<?php
+
+/**
+ * Implements hook_entity_info().
+ */
+function cultuurnetdb_entity_info()
+{
+  $return = array();
+
+  $return['cultuurnetdb_event'] = array(
+    'label' => t('Cultuurnetdb Event'),
+    'entity class' => '\\Drupal\\cultuurnetdb\\EventEntity',
+    'controller class' => '\\Drupal\\cultuurnetdb\\EventEntityController',
+    'module' => 'cultuurnetdb',
+    'entity keys' => array(
+      'id' => 'id',
+      'label' => 'title',
+    ),
+  );
+
+  return $return;
+}
+
+/**
+ * Implements hook_entity_property_info().
+ */
+function cultuurnetdb_entity_property_info()
+{
+  $info['cultuurnetdb_event'] = array();
+  $info['cultuurnetdb_event']['properties'] = array(
+    'id' => array(
+      'type' => 'integer',
+      'label' => t('ID'),
+    ),
+    'cdbid' => array(
+      'label' => t('Cdb ID'),
+    ),
+    'remote_id' => array(
+      'label' => t('Remote ID'),
+    ),
+  );
+
+  return $info;
+}
+
+/**
+ * @return CultuurNet\Search\ServiceInterface
+ */
+function cultuurnetdb_get_service() {
+  $service =& drupal_static(__FUNCTION__);
+
+  if (!$service) {
+    // @todo Settings.
+    $baseUrl = 'http://searchv2.cultuurnet.lodgon.com/search-poc/rest';
+    $consumerCredentials = new \CultuurNet\Auth\ConsumerCredentials();
+    $consumerCredentials->setKey('');
+    $consumerCredentials->setSecret('');
+    // @todo Token credentials, from culturefeed module if enabled.
+    $service = new \CultuurNet\Search\Guzzle\Service($baseUrl, $consumerCredentials);
+  }
+
+  return $service;
+}
+
+/**
+ * Implements hook_permission().
+ */
+function cultuurnetdb_permission()
+{
+  $return = array();
+
+  $return['view UiT events'] = array(
+    'title' => t('view UiT events'),
+    'description' => t('View events from the UiT databank'),
+  );
+
+  return $return;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function cultuurnetdb_menu() {
+  $items = array();
+
+  $items['event/%cultuurnetdb_event_id'] = array(
+    'title callback' => 'cultuurnetdb_event_page_title',
+    'title arguments' => array(1),
+    'description' => 'Description',
+    'access arguments' => array('view UiT events'),
+    'page callback' => 'cultuurnetdb_event_page',
+    'page arguments' => array(1),
+    'type' => MENU_CALLBACK,
+  );
+
+  return $items;
+}
+
+function cultuurnetdb_event_id_load($id) {
+  $entitites = entity_load('cultuurnetdb_event', FALSE, array('cdbid' => $id));
+  return reset($entitites);
+}
+
+function cultuurnetdb_event_page_title(\Drupal\cultuurnetdb\EventEntity $eventEntity) {
+  $activityStatsExtendedEntity = $eventEntity->entry;
+  $event = $activityStatsExtendedEntity->getEntity();
+  /** @var \CultureFeed_Cdb_Item_Event $event */
+  $details = $event->getDetails();
+
+  foreach ($details as $detail) {
+    // @todo Figure out how to properly handle language.
+    if ('nl' === $detail->getLanguage()) {
+        return $detail->getTitle();
+    }
+  }
+
+  return '';
+}
+
+function cultuurnetdb_event_page($event) {
+  // @todo Use an entity view mode here.
+  return check_plain(var_export($event, TRUE));
+}
+
+function cultuurnetdb_entity_get_local_id($entity_type, $cdbid) {
+  $q = db_select('cultuurnetdb_id', 'm')
+    ->fields('m', array('id'))
+    ->condition('m.cdbid', $cdbid)
+    ->condition('m.entity_type', $entity_type);
+  return $q->execute()->fetchField();
+}
+
+function cultuurnetdb_entity_generate_local_id($entity_type, $cdbid) {
+  $id = db_insert('cultuurnetdb_id')
+    ->fields(
+      array('entity_type', 'cdbid'),
+      array($entity_type, $cdbid)
+    )
+    ->execute();
+
+  return $id;
+}
+
+function cultuurnetdb_entity_get_remote_id($entity_type, $id) {
+    $q = db_select('cultuurnetdb_id', 'm')
+      ->fields('m', array('cdbid'))
+      ->condition('m.id', $id)
+      ->condition('m.entity_type', $entity_type);
+    return $q->execute()->fetchField();
+}
+
+/**
+ * Implements hook_entity_query_alter().
+ *
+ * @param EntityFieldQuery $query
+ */
+function cultuurnetdb_entity_query_alter(EntityFieldQuery $query) {
+    //dpm($query);
+    if (isset($query->entityConditions['entity_type'])
+        && $query->entityConditions['entity_type']['value'] === 'cultuurnetdb_event'
+    ) {
+      $query->executeCallback = 'cultuurnetdb_efq_execute';
+    }
+}
+
+function cultuurnetdb_efq_execute(EntityFieldQuery $query) {
+    $service = cultuurnetdb_get_service();
+
+    $parameters = array();
+
+    $luceneQuery = array();
+    foreach ($query->propertyConditions as $condition) {
+      $column = $condition['column'];
+      $value = $condition['value'];
+      $operator = $condition['operator'];
+
+      if (FALSE !== strpos($value, ' ')) {
+        $value = '"' . str_replace('"', '\\"', $value) . '"';
+      }
+
+      // @todo handle operator (range queries, not equals, etc.)
+      $luceneQuery[] = "{$column}:{$value}";
+    }
+
+    if (!empty($luceneQuery)) {
+      $parameters[] = new \CultuurNet\Search\Parameter\Query(implode(' AND ', $luceneQuery));
+    }
+
+    $parameters[] = new \CultuurNet\Search\Parameter\FilterQuery('type:event');
+
+    if ($query->range) {
+      $parameters[] = new \CultuurNet\Search\Parameter\Start($this->range['start']);
+      $parameters[] = new \CultuurNet\Search\Parameter\Rows($this->range['length']);
+    }
+
+    $result = $service->search($parameters);
+
+    if ($query->count) {
+      return $result->getTotalCount();
+    }
+
+    $return = array();
+
+    // @todo since EFQ is supposed to return stub items, consider not completely parsing the search results
+    // as we just need the cdbids here
+    $return['cultuurnetdb_event'] = array();
+
+    foreach ($result->getItems() as $item) {
+      $entity = new \Drupal\cultuurnetdb\EventEntity($item);
+      $bundle = NULL;
+
+      // @todo check if revision_id 1 can be used if this entity type is not revisionable
+      $stubEntity = entity_create_stub_entity($entity->entityType(), array($entity->id, NULL, $bundle));
+      $return[$entity->entityType()][$entity->id] = $stubEntity;
+      $query->ordered_results[] = $entity;
+    }
+
+    return $return;
+}
